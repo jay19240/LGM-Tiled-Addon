@@ -54,7 +54,7 @@ export function jtmExport(map) {
     else if (item.layer.isObjectLayer && !utils.isTypedLayer(item.layer)) {
       obj.Layers.push(objectLayerExport(item, map));
     }
-    else if (!item.layer.isObjectLayer) {
+    else if (!item.layer.isObjectLayer && !utils.isPreviewLayer(item.layer)) {
       warnings.push(`JTM export: layer "${item.layer.name}" is skipped, only tile and object layers are supported`);
     }
   }
@@ -117,6 +117,10 @@ export function parseTileIds(text) {
   return String(text).split(',').map(v => v.trim()).filter(v => v != '').map(v => Number(v)).filter(v => Number.isInteger(v));
 }
 
+/**
+ * The engine draws a layer at position - offset (Gfx2Drawable.render), the Tiled offset is negated.
+ * The offset of the map (Export section of the panel) is already applied to the Tiled layers.
+ */
 function tileLayerExport(item, tileset, frameDuration, warnings) {
   const layer = item.layer;
   const grid = [];
@@ -158,8 +162,8 @@ function tileLayerExport(item, tileset, frameDuration, warnings) {
     Name: layer.name,
     Rows: layer.height,
     Columns: layer.width,
-    OffsetX: item.offsetX,
-    OffsetY: item.offsetY,
+    OffsetX: -item.offsetX,
+    OffsetY: -item.offsetY,
     Visible: item.visible,
     FrameDuration: frameDuration,
     Grid: grid,
@@ -185,8 +189,8 @@ function objectLayerExport(item, map) {
     Name: item.layer.name,
     Rows: 0,
     Columns: 0,
-    OffsetX: item.offsetX,
-    OffsetY: item.offsetY,
+    OffsetX: -item.offsetX,
+    OffsetY: -item.offsetY,
     Visible: item.visible,
     FrameDuration: 0,
     Grid: [],
@@ -247,10 +251,41 @@ function propertyValueExport(value) {
 // ----------------------------------------------------------------------------------
 export function entExport(object, context) {
   const fields = props.OBJECT_FIELDS[props.LAYER_ENT];
-  const obj = {
-    Ident: 'ENT'
-  };
+  const keys = {};
 
+  const model = props.getValue(object, 'Model', fields);
+  if (model != '') {
+    if (!getModelNames(object.map).includes(model)) {
+      context.warnings.push(`ENT export: entity "${object.name}" uses the model "${model}" which is not in the JSS or JAS layers`);
+    }
+
+    keys['Model'] = model;
+  }
+
+  keys['OnActionBlockId'] = props.getValue(object, 'OnActionBlockId', fields);
+  return entityFileExport(object, fields, keys);
+}
+
+// ----------------------------------------------------------------------------------
+// TRG
+// ----------------------------------------------------------------------------------
+/**
+ * A trigger is exported as an entity file (loaded by EnginePack2D) with its block ids.
+ */
+export function trgExport(object, context) {
+  const fields = props.OBJECT_FIELDS[props.LAYER_TRG];
+  return entityFileExport(object, fields, {
+    OnEnterBlockId: props.getValue(object, 'OnEnterBlockId', fields),
+    OnLeaveBlockId: props.getValue(object, 'OnLeaveBlockId', fields),
+    OnActionBlockId: props.getValue(object, 'OnActionBlockId', fields)
+  });
+}
+
+/**
+ * Entity file of an entity or a trigger: the keys of its type follow the shape, then the
+ * position (center of an AABB or a circle), rotation, scale, size and custom params.
+ */
+function entityFileExport(object, fields, keys) {
   let shape = 'UNKNOWN';
   if (object.shape === MapObject.Rectangle) {
     shape = 'AABB';
@@ -260,39 +295,29 @@ export function entExport(object, context) {
   }
 
   const pos = shape == 'UNKNOWN' ? utils.getObjectPosition(object) : utils.getObjectCenter(object);
-
-  obj['Name'] = object.name;
-  obj['Type'] = props.getValue(object, 'Type', fields);
-  obj['Shape'] = shape;
-
-  const model = props.getValue(object, 'Model', fields);
-  if (model != '') {
-    if (!getModelNames(object.map).includes(model)) {
-      context.warnings.push(`ENT export: entity "${object.name}" uses the model "${model}" which is not in the JSS or JAS layers`);
-    }
-
-    obj['Model'] = model;
-    obj['ModelBehavior'] = props.getValue(object, 'ModelBehavior', fields);
-  }
-
-  obj['PositionX'] = pos[0];
-  obj['PositionY'] = pos[1];
-  obj['PositionZ'] = 0;
-  obj['RotationX'] = 0;
-  obj['RotationY'] = 0;
-  obj['RotationZ'] = object.rotation * Math.PI / 180;
-  obj['ScaleX'] = 1;
-  obj['ScaleY'] = 1;
-  obj['ScaleZ'] = 1;
-  obj['Width'] = object.width;
-  obj['Height'] = object.height;
-  obj['Depth'] = 0;
-  obj['CustomParams'] = [];
-
-  for (const field of fields.filter(field => field.type == 'slot')) {
-    const slot = props.getSlot(object, field.key);
-    obj['CustomParams'].push({ Name: slot.name, Value: slot.value });
-  }
+  const obj = Object.assign({
+    Ident: 'ENT',
+    Name: object.name,
+    Type: props.getValue(object, 'Type', fields),
+    Shape: shape
+  }, keys, {
+    PositionX: pos[0],
+    PositionY: pos[1],
+    PositionZ: 0,
+    RotationX: 0,
+    RotationY: 0,
+    RotationZ: object.rotation * Math.PI / 180,
+    ScaleX: 1,
+    ScaleY: 1,
+    ScaleZ: 1,
+    Width: object.width,
+    Height: object.height,
+    Depth: 0,
+    CustomParams: fields.filter(field => field.type == 'slot').map(field => {
+      const slot = props.getSlot(object, field.key);
+      return { Name: slot.name, Value: slot.value };
+    })
+  });
 
   if (shape == 'CIRCLE') {
     obj['Radius'] = object.width / 2;
@@ -326,19 +351,16 @@ export function jlmExport(object, context) {
     return null;
   }
 
-  const obj = {
-    Ident: 'JLM',
-    NumPoints: -1,
-    Points: []
-  };
-
-  for (const point of object.polygon) {
+  const points = object.polygon.map(point => {
     const pos = utils.getObjectPointPosition(object, point.x, point.y);
-    obj['Points'].push([pos[0], pos[1], 0]);
-  }
+    return [pos[0], pos[1], 0];
+  });
 
-  obj['NumPoints'] = obj['Points'].length;
-  return obj;
+  return {
+    Ident: 'JLM',
+    NumPoints: points.length,
+    Points: points
+  };
 }
 
 // ----------------------------------------------------------------------------------
@@ -370,47 +392,17 @@ export function jasExport(object, context) {
     Animations: []
   };
 
-  const texturePath = textureExport(object, fields, context);
-  const frameWidth = props.getValue(object, 'FrameWidth', fields);
-  const frameHeight = props.getValue(object, 'FrameHeight', fields);
+  textureExport(object, fields, context);
 
-  if (!texturePath) {
-    throw new Error(`JAS export: sprite "${object.name}" needs a texture to compute its frames`);
-  }
-
-  if (frameWidth <= 0 || frameHeight <= 0) {
-    throw new Error(`JAS export: sprite "${object.name}" needs a frame width and a frame height`);
-  }
-
-  const numCol = Math.floor(new Image(texturePath).width / frameWidth);
-  if (numCol <= 0) {
-    throw new Error(`JAS export: sprite "${object.name}" has a frame width larger than its texture`);
-  }
-
-  for (const anim of props.getValue(object, 'Animations', fields)) {
-    const animOwner = { property: key => anim[key] };
-    const animFields = props.findField(fields, 'Animations').fields;
-    const startFrame = props.getValue(animOwner, 'StartFrame', animFields);
-    const endFrame = props.getValue(animOwner, 'EndFrame', animFields);
-    const frames = [];
-
-    for (let i = startFrame; i <= endFrame; i++) {
-      frames.push({
-        X: (i % numCol) * frameWidth,
-        Y: Math.floor(i / numCol) * frameHeight,
-        Width: frameWidth,
-        Height: frameHeight
-      });
-    }
-
-    if (frames.length == 0) {
-      context.warnings.push(`JAS export: animation "${props.getValue(animOwner, 'Name', animFields)}" of sprite "${object.name}" has no frame, its end frame is lower than its start frame`);
+  for (const anim of props.getListValues(object, 'Animations', fields)) {
+    if (anim.Frames.length == 0) {
+      context.warnings.push(`JAS export: animation "${anim.Name}" of sprite "${object.name}" has no frame`);
     }
 
     obj['Animations'].push({
-      Name: props.getValue(animOwner, 'Name', animFields),
-      Frames: frames,
-      FrameDuration: props.getValue(animOwner, 'FrameDuration', animFields)
+      Name: anim.Name,
+      Frames: anim.Frames,
+      FrameDuration: anim.FrameDuration
     });
   }
 
@@ -459,13 +451,13 @@ export function prtExport(object, context) {
       continue;
     }
 
-    const value = props.getValue(object, field.key, fields);
     if (field.tween) {
-      obj[field.key + 'Times'] = value.map(item => props.decodeValue(field.fields[0], item['Time']));
-      obj[field.key + 'Values'] = value.map(item => props.decodeValue(field.fields[1], item['Value']));
+      const items = props.getListValues(object, field.key, fields);
+      obj[field.key + 'Times'] = items.map(item => item.Time);
+      obj[field.key + 'Values'] = items.map(item => item.Value);
     }
     else {
-      obj[field.exportKey ?? field.key] = value;
+      obj[field.exportKey ?? field.key] = props.getValue(object, field.key, fields);
     }
   }
 
@@ -493,6 +485,7 @@ export function camExport(object, context) {
 // ----------------------------------------------------------------------------------
 const EXPORTERS = {
   [props.LAYER_ENT]: entExport,
+  [props.LAYER_TRG]: trgExport,
   [props.LAYER_JLM]: jlmExport,
   [props.LAYER_JSS]: jssExport,
   [props.LAYER_JAS]: jasExport,
@@ -564,7 +557,7 @@ export function packExport(map, objects = null) {
     }
 
     const name = type == props.LAYER_CAM ? 'camera' : utils.getExportName(object);
-    const path = FileInfo.joinPaths(context.dir, name + '.' + type.toLowerCase());
+    const path = FileInfo.joinPaths(context.dir, name + '.' + props.getFileExtension(type));
     if (context.files.includes(path)) {
       context.warnings.push(`Export: "${FileInfo.fileName(path)}" is written by several objects, give them different names`);
     }

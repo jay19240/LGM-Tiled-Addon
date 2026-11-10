@@ -6,6 +6,8 @@ import * as functions from './functions.mjs';
 export const CREATE_OPERATORS = [
   { id: 'LegacyMakerCreateEntityAABB', text: 'Entity AABB', type: props.LAYER_ENT, shape: MapObject.Rectangle, name: 'Entity' },
   { id: 'LegacyMakerCreateEntityCircle', text: 'Entity Circle', type: props.LAYER_ENT, shape: MapObject.Ellipse, name: 'Entity' },
+  { id: 'LegacyMakerCreateTriggerAABB', text: 'Trigger AABB', type: props.LAYER_TRG, shape: MapObject.Rectangle, name: 'Trigger' },
+  { id: 'LegacyMakerCreateTriggerCircle', text: 'Trigger Circle', type: props.LAYER_TRG, shape: MapObject.Ellipse, name: 'Trigger' },
   { id: 'LegacyMakerCreateLine', text: 'Line', type: props.LAYER_JLM, shape: MapObject.Polyline, name: 'Line' },
   { id: 'LegacyMakerCreateStaticSprite', text: 'Static Sprite', type: props.LAYER_JSS, shape: MapObject.Rectangle, name: 'Sprite' },
   { id: 'LegacyMakerCreateAnimatedSprite', text: 'Animated Sprite', type: props.LAYER_JAS, shape: MapObject.Rectangle, name: 'AnimatedSprite' },
@@ -67,6 +69,24 @@ export function createObject(operator, map = getActiveMap()) {
 
   map.selectedObjects = [object];
   return object;
+}
+
+/**
+ * The map offset moves the JTM layers in Tiled, the sign is inverted at export (functions.jtmExport).
+ */
+export function setMapOffset(map, axis, value) {
+  const key = props.MAP_FIELDS.find(field => field.mapOffsetAxis === axis).key;
+  const delta = value - props.getValue(map, key, props.MAP_FIELDS);
+
+  map.macro('Change Map Offset', () => {
+    props.setValue(map, key, props.MAP_FIELDS, value);
+    for (const item of utils.collectLayers(map.layers)) {
+      if (utils.isJtmLayer(item.layer)) {
+        const offset = item.layer.offset;
+        item.layer.offset = axis == 0 ? Qt.point(offset.x + delta, offset.y) : Qt.point(offset.x, offset.y + delta);
+      }
+    }
+  });
 }
 
 function getViewCenter(map) {

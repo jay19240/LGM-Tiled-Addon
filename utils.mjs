@@ -1,4 +1,4 @@
-import { TYPED_LAYERS } from './props.mjs';
+import { TYPED_LAYERS, PREVIEW_LAYER } from './props.mjs';
 // ----------------------------------------------------------------------------------
 
 // ----------------------------------------------------------------------------------
@@ -26,6 +26,17 @@ export function collectLayers(layers, offsetX = 0, offsetY = 0, visible = true, 
 
 export function isTypedLayer(layer) {
   return layer.isObjectLayer && TYPED_LAYERS.includes(layer.name);
+}
+
+/**
+ * Layers exported in the JTM file.
+ */
+export function isJtmLayer(layer) {
+  return layer.isTileLayer || (layer.isObjectLayer && !isTypedLayer(layer));
+}
+
+export function isPreviewLayer(layer) {
+  return layer.isImageLayer && layer.name == PREVIEW_LAYER;
 }
 
 /**

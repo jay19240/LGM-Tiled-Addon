@@ -2,18 +2,29 @@
 // LAYERS (equivalent of the Blender collections)
 // ----------------------------------------------------------------------------------
 export const LAYER_ENT = 'ENT';
+export const LAYER_TRG = 'TRG';
 export const LAYER_JLM = 'JLM';
 export const LAYER_JSS = 'JSS';
 export const LAYER_JAS = 'JAS';
 export const LAYER_PRT = 'PRT';
 export const LAYER_CAM = 'CAM';
-export const TYPED_LAYERS = [LAYER_ENT, LAYER_JLM, LAYER_JSS, LAYER_JAS, LAYER_PRT, LAYER_CAM];
+export const TYPED_LAYERS = [LAYER_ENT, LAYER_TRG, LAYER_JLM, LAYER_JSS, LAYER_JAS, LAYER_PRT, LAYER_CAM];
+export const PREVIEW_LAYER = 'LegacyMakerPreview';
+
+// The triggers are exported as entity files, the formats loaded by the engine packs.
+const FILE_EXTENSIONS = { [LAYER_TRG]: 'ent' };
+
+export function getFileExtension(type) {
+  return FILE_EXTENSIONS[type] ?? type.toLowerCase();
+}
 
 // ----------------------------------------------------------------------------------
 // FIELDS
-// Field types: string, int, number, bool, enum, file, directory, model, vector, color, list.
+// Field types: string, int, number, bool, enum, file, directory, model, vector, color, slot, list.
+// A slot is a custom param, its name and its value are stored in two properties (S00Name, S00Value).
 // Consecutive fields with the same group are drawn in a foldout of the panel.
-// Vectors and colors are stored as "a, b, c" strings, lists as JSON strings.
+// Vectors and colors are stored as "a, b, c" strings, lists as JSON strings. A list nested in
+// a list item is stored as an array in the JSON of its parent.
 // ----------------------------------------------------------------------------------
 const OFFSET_FIELDS = [
   { key: 'OffsetX', label: 'Offset X', type: 'number', default: 0, group: 'Offset' },
@@ -34,7 +45,9 @@ for (let i = 0; i < 16; i++) {
 export const MAP_FIELDS = [
   { key: 'ExportPath', label: 'Output Path', type: 'directory', default: '' },
   { key: 'TextureDir', label: 'Texture Dir', type: 'string', default: '' },
-  { key: 'FrameDuration', label: 'Frame Duration (ms)', type: 'int', default: 0 }
+  { key: 'FrameDuration', label: 'Frame Duration (ms)', type: 'int', default: 0 },
+  { key: 'OffsetX', label: 'Offset X', type: 'number', default: 0, mapOffsetAxis: 0 },
+  { key: 'OffsetY', label: 'Offset Y', type: 'number', default: 0, mapOffsetAxis: 1 }
 ];
 
 export const TILE_FIELDS = [
@@ -47,7 +60,14 @@ export const OBJECT_FIELDS = {
   [LAYER_ENT]: [
     { key: 'Type', label: 'Type', type: 'string', default: '' },
     { key: 'Model', label: 'Model', type: 'model', default: '' },
-    { key: 'ModelBehavior', label: 'Model Behavior', type: 'enum', items: ['INSTANCE', 'DUPLICATE'], default: 'INSTANCE', visible: obj => getValue(obj, 'Model', OBJECT_FIELDS[LAYER_ENT]) != '' },
+    { key: 'OnActionBlockId', label: 'On Action Block Id', type: 'string', default: '' },
+    ...ENTITY_SLOT_FIELDS
+  ],
+  [LAYER_TRG]: [
+    { key: 'Type', label: 'Type', type: 'string', default: 'TRIGGER' },
+    { key: 'OnEnterBlockId', label: 'On Enter Block Id', type: 'string', default: '' },
+    { key: 'OnLeaveBlockId', label: 'On Leave Block Id', type: 'string', default: '' },
+    { key: 'OnActionBlockId', label: 'On Action Block Id', type: 'string', default: '' },
     ...ENTITY_SLOT_FIELDS
   ],
   [LAYER_JLM]: [],
@@ -61,15 +81,19 @@ export const OBJECT_FIELDS = {
   ],
   [LAYER_JAS]: [
     { key: 'Texture', label: 'Texture', type: 'file', default: '' },
-    { key: 'FrameWidth', label: 'Frame Width', type: 'int', default: 0 },
-    { key: 'FrameHeight', label: 'Frame Height', type: 'int', default: 0 },
     ...OFFSET_FIELDS,
     {
-      key: 'Animations', label: 'Animations', type: 'list', group: 'Animations', fields: [
+      key: 'Animations', label: 'Animations', type: 'list', group: 'Animations', collapsible: true, playable: true, fields: [
         { key: 'Name', label: 'Name', type: 'string', default: '' },
-        { key: 'StartFrame', label: 'Start Frame', type: 'int', default: 0 },
-        { key: 'EndFrame', label: 'End Frame', type: 'int', default: 0 },
-        { key: 'FrameDuration', label: 'Frame Duration', type: 'int', default: 0 }
+        { key: 'FrameDuration', label: 'Frame Duration', type: 'int', default: 0 },
+        {
+          key: 'Frames', label: 'Frames', itemLabel: 'Frame', type: 'list', table: true, fields: [
+            { key: 'X', label: 'X', type: 'int', default: 0 },
+            { key: 'Y', label: 'Y', type: 'int', default: 0 },
+            { key: 'Width', label: 'Width', type: 'int', default: 0 },
+            { key: 'Height', label: 'Height', type: 'int', default: 0 }
+          ]
+        }
       ]
     }
   ],
@@ -152,7 +176,7 @@ export function decodeValue(field, raw) {
     case 'color':
       return String(raw).split(',').map(v => Number(v.trim()));
     case 'list':
-      return JSON.parse(String(raw));
+      return Array.isArray(raw) ? raw : JSON.parse(String(raw));
     default:
       return String(raw);
   }
@@ -182,6 +206,22 @@ export function encodeValue(field, value) {
 export function getValue(owner, key, fields) {
   const field = findField(fields, key);
   return decodeValue(field, owner.property(key));
+}
+
+/**
+ * Read the items of a list field, with the decoded values of their fields (nested lists included).
+ */
+export function getListValues(owner, key, fields) {
+  const listField = findField(fields, key);
+  return getValue(owner, key, fields).map(item => {
+    const itemOwner = { property: itemKey => item[itemKey] };
+    const values = {};
+    for (const field of listField.fields) {
+      values[field.key] = field.type == 'list' ? getListValues(itemOwner, field.key, listField.fields) : getValue(itemOwner, field.key, listField.fields);
+    }
+
+    return values;
+  });
 }
 
 export function setValue(owner, key, fields, value) {
@@ -217,7 +257,7 @@ export function setDefaultValues(owner, fields) {
 export function createListItem(listField) {
   const item = {};
   for (const field of listField.fields) {
-    item[field.key] = encodeValue(field, decodeValue(field, undefined));
+    item[field.key] = field.type == 'list' ? [] : encodeValue(field, decodeValue(field, undefined));
   }
 
   return item;
@@ -232,8 +272,9 @@ export function createListItemOwner(owner, listField, index) {
       return getValue(owner, listField.key, [listField])[index][key];
     },
     setProperty(key, value) {
+      const field = findField(listField.fields, key);
       const items = getValue(owner, listField.key, [listField]);
-      items[index][key] = value;
+      items[index][key] = field && field.type == 'list' ? JSON.parse(value) : value;
       setValue(owner, listField.key, [listField], items);
     }
   };

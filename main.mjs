@@ -1,10 +1,13 @@
 import * as functions from './functions.mjs';
 import * as operators from './operators.mjs';
 import * as panels from './panels.mjs';
+import * as previews from './previews.mjs';
+import * as utils from './utils.mjs';
 // ----------------------------------------------------------------------------------
 
 operators.register();
 panels.register();
+previews.register();
 
 if (tiled.menus.includes('Map')) {
   tiled.extendMenu('Map', [
@@ -26,9 +29,7 @@ tiled.registerMapFormat('jtm', {
         tiled.warn(warning, () => {});
       }
 
-      const file = new TextFile(fileName, TextFile.WriteOnly);
-      file.write(JSON.stringify(data));
-      file.commit();
+      utils.writeJson(fileName, data);
     }
     catch (e) {
       return e.message;
